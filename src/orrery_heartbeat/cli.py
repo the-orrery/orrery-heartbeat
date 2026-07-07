@@ -15,7 +15,6 @@ TOOLS = [
     "pharos",
     "memex",
     "rhizome",
-    "gnomon",
     "almagest",
     "seed",
     "orrery-heartbeat",
