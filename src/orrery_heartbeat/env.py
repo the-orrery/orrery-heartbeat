@@ -19,9 +19,11 @@ _ENV_PREFIX_MAP = {
         "workspace_tier": "WORKSPACE_TIER",
     },
     "kb": {
+        "workspace_root": "KB_WORKSPACE_ROOT",
         "sources": "KB_SOURCES",
         "search_embedding_url": "KB_SEARCH_EMBEDDING_URL",
         "search_qdrant_url": "KB_SEARCH_QDRANT_URL",
+        "search_ca_bundle": "KB_SEARCH_CA_BUNDLE",
     },
     "crux": {
         "tools_root": "CRUX_TOOLS_ROOT",
