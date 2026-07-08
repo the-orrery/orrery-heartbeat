@@ -41,7 +41,7 @@ def load_env(path: Path | None = None) -> dict[str, str]:
     p = path or _ENV_FILE
     if not p.exists():
         return {}
-    with open(p, "rb") as f:
+    with p.open("rb") as f:
         data = tomllib.load(f)
 
     result: dict[str, str] = {}
