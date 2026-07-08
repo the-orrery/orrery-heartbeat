@@ -18,6 +18,7 @@ dependencies = []
 
 [project.scripts]
 orrery-upgrade = "orrery_heartbeat.cli:run"
+orrery-env = "orrery_heartbeat.env:run"
 
 [dependency-groups]
 dev = [
