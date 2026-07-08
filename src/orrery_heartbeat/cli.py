@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 
@@ -42,10 +43,8 @@ def run() -> None:
             continue
 
         sha = ""
-        try:
+        with contextlib.suppress(Exception):
             sha = _fetch_latest_sha(repo)
-        except Exception:
-            pass
         if sha:
             mark_installed(tool, sha)
         print("✓")

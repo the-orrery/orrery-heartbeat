@@ -11,6 +11,7 @@ Usage: call check_update() once at CLI entry point.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -39,10 +40,8 @@ def check_update(
     Non-blocking: network failures and all exceptions are silently swallowed.
     Skipped in CI, non-TTY, or if checked within *hours*.
     """
-    try:
+    with contextlib.suppress(Exception):
         _check(tool, repo, hours, upgrade_command)
-    except Exception:
-        pass
 
 
 def _check(tool: str, repo: str, hours: int, upgrade_command: str) -> None:
@@ -65,7 +64,7 @@ def _check(tool: str, repo: str, hours: int, upgrade_command: str) -> None:
 
     installed_sha = _installed_sha(tool, state)
     if not installed_sha:
-        # 首次运行：记录当前版本，不提示
+        # 首次运行: 记录当前版本, 不提示
         return
 
     if latest_sha != installed_sha:
@@ -101,7 +100,7 @@ def _save_state(path: Path, latest_sha: str) -> None:
     path.write_text(json.dumps(state), encoding="utf-8")
 
 
-def _installed_sha(tool: str, state: dict | None) -> str:
+def _installed_sha(_tool: str, state: dict | None) -> str:
     """Return the SHA recorded at last install/upgrade, or empty string."""
     if state:
         return state.get("installed_sha", "")
