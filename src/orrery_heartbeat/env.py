@@ -8,7 +8,9 @@ import sys
 import tomllib
 from pathlib import Path
 
-_ENV_FILE = Path(os.environ.get("ORRERY_ENV_FILE", "~/.config/orrery/env.toml")).expanduser()
+_ENV_FILE = Path(
+    os.environ.get("ORRERY_ENV_FILE", "~/.config/orrery/env.toml")
+).expanduser()
 
 _ENV_PREFIX_MAP = {
     "core": {
@@ -46,16 +48,25 @@ def load_env(path: Path | None = None) -> dict[str, str]:
         for key, env_name in mapping.items():
             if key in section_data:
                 value = str(section_data[key])
-                result[env_name] = str(Path(value).expanduser()) if value.startswith("~") else value
+                result[env_name] = (
+                    str(Path(value).expanduser()) if value.startswith("~") else value
+                )
     return result
 
 
 def run() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(prog="orrery-env", description="Export orrery env from ~/.config/orrery/env.toml")
+    parser = argparse.ArgumentParser(
+        prog="orrery-env",
+        description="Export orrery env from ~/.config/orrery/env.toml",
+    )
     parser.add_argument("--json", action="store_true", help="output as JSON object")
-    parser.add_argument("--claude", action="store_true", help="output as Claude profile env template fragment")
+    parser.add_argument(
+        "--claude",
+        action="store_true",
+        help="output as Claude profile env template fragment",
+    )
     parser.add_argument("--file", default=None, help="override env.toml path")
     args = parser.parse_args()
 

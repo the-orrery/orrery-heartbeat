@@ -22,7 +22,9 @@ from pathlib import Path
 __version__ = "0.1.0"
 
 _DEFAULT_HOURS = 6
-_CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "orrery-heartbeat"
+_CACHE_DIR = (
+    Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "orrery-heartbeat"
+)
 
 
 def check_update(
