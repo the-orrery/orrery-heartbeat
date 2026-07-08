@@ -18,8 +18,29 @@ On each invocation (throttled to once per 6 hours), checks GitHub for new commit
 
 ## orrery-upgrade
 
-Installs/upgrades all orrery tools from GitHub main:
+Plans or installs/upgrades all orrery tools from GitHub main. The bare command
+is read-only and prints the install plan:
 
 ```
 orrery-upgrade
+```
+
+Apply the upgrade explicitly:
+
+```
+orrery-upgrade --apply
+```
+
+Useful read-only modes:
+
+```
+orrery-upgrade --help
+orrery-upgrade --list
+orrery-upgrade --dry-run crux rhizome
+```
+
+Upgrade selected tools by naming them:
+
+```
+orrery-upgrade --apply crux rhizome
 ```
