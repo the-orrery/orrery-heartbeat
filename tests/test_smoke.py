@@ -3,9 +3,7 @@ import subprocess
 
 import pytest
 
-import orrery_heartbeat
-from orrery_heartbeat import check_update
-from orrery_heartbeat import cli
+from orrery_heartbeat import check_update, cli, env, mark_installed
 
 
 def test_check_update_noop_in_ci(monkeypatch):
@@ -15,9 +13,7 @@ def test_check_update_noop_in_ci(monkeypatch):
 
 
 def test_load_env_missing_file(tmp_path):
-    from orrery_heartbeat.env import load_env
-
-    result = load_env(tmp_path / "nonexistent.toml")
+    result = env.load_env(tmp_path / "nonexistent.toml")
     assert result == {}
 
 
@@ -74,7 +70,7 @@ def test_upgrade_dry_run_has_no_install_side_effect(monkeypatch, capsys):
 def test_upgrade_selected_tool_requires_apply(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(
-        cli.subprocess, "run", lambda *args, **kwargs: calls.append(args)
+        cli.subprocess, "run", lambda *args, **_kwargs: calls.append(args)
     )
 
     cli.run(["crux"])
@@ -91,7 +87,7 @@ def test_upgrade_apply_selected_tool_installs_only_that_tool(monkeypatch, capsys
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(cli, "_fetch_latest_sha", lambda repo: "abc123")
+    monkeypatch.setattr(cli, "_fetch_latest_sha", lambda _repo: "abc123")
     installed = []
     monkeypatch.setattr(
         cli, "mark_installed", lambda tool, sha: installed.append((tool, sha))
@@ -119,7 +115,7 @@ def test_upgrade_apply_selected_tool_installs_only_that_tool(monkeypatch, capsys
 def test_upgrade_unknown_tool_exits_before_install(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        cli.subprocess, "run", lambda *args, **kwargs: calls.append(args)
+        cli.subprocess, "run", lambda *args, **_kwargs: calls.append(args)
     )
 
     with pytest.raises(SystemExit) as exc_info:
@@ -130,9 +126,9 @@ def test_upgrade_unknown_tool_exits_before_install(monkeypatch):
 
 
 def test_mark_installed_records_latest_sha(tmp_path, monkeypatch):
-    monkeypatch.setattr(orrery_heartbeat, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr("orrery_heartbeat._CACHE_DIR", tmp_path)
 
-    orrery_heartbeat.mark_installed("crux", "abc123")
+    mark_installed("crux", "abc123")
 
     state = json.loads((tmp_path / "crux" / "state.json").read_text())
     assert state["installed_sha"] == "abc123"
