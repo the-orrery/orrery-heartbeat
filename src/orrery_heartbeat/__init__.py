@@ -33,7 +33,7 @@ def check_update(
     repo: str,
     *,
     hours: int = _DEFAULT_HOURS,
-    upgrade_command: str = "orrery-upgrade",
+    upgrade_command: str = "orrery-upgrade --apply",
 ) -> None:
     """Check GitHub for a newer commit on main; print a one-line hint if found.
 
@@ -112,6 +112,7 @@ def mark_installed(tool: str, sha: str) -> None:
     state_file = _CACHE_DIR / tool / "state.json"
     state = _load_state(state_file) or {}
     state["installed_sha"] = sha
+    state["latest_sha"] = sha
     state["checked_at"] = time.time()
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_text(json.dumps(state), encoding="utf-8")
