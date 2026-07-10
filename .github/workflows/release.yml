@@ -10,4 +10,4 @@ jobs:
   release:
     permissions:
       contents: write
-    uses: the-orrery/.github/.github/workflows/python-release.yml@v10
+    uses: the-orrery/.github/.github/workflows/python-release.yml@a3e25899dda04f4f1a573160d1b9d0e673a42421 # v11

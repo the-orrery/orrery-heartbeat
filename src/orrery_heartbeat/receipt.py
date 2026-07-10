@@ -133,7 +133,7 @@ def _string(payload: dict[str, Any], key: str) -> str:
 
 def _asset(payload: Any) -> InstalledAsset:
     if not isinstance(payload, dict):
-        raise ValueError("asset must be an object")
+        raise TypeError("asset must be an object")
     return InstalledAsset(
         name=_string(payload, "name"),
         release_asset=_string(payload, "release_asset"),

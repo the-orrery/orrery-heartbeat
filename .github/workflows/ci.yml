@@ -15,3 +15,5 @@ concurrency:
 jobs:
   ci:
     uses: the-orrery/.github/.github/workflows/python-ci.yml@58e94252df4b455f1b6890ca5a8b400b3688ba81 # v9
+    with:
+      ruff-extend-ignore: '["TRY003", "TRY301"]'

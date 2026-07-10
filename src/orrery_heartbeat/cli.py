@@ -14,8 +14,8 @@ from pathlib import Path
 
 from . import _ssl_context
 from .receipt import (
-    InstallReceipt,
     InstalledAsset,
+    InstallReceipt,
     dumps,
     load,
     receipt_name,
