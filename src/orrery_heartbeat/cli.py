@@ -28,6 +28,8 @@ TOOL_ASSETS: dict[str, tuple[str, ...]] = {
     "seed": ("seed",),
 }
 TOOLS = tuple(TOOL_ASSETS)
+CHECKSUM_FIELD_COUNT = 2
+SHA256_HEX_LENGTH = 64
 
 
 @dataclass(frozen=True)
@@ -93,7 +95,7 @@ def run(argv: list[str] | None = None) -> None:
         print(f"  {tool}: ", end="", flush=True)
         try:
             tag = _install_tool(tool, bin_dir=bin_dir, timeout=args.timeout)
-        except Exception as exc:  # noqa: BLE001 - one repo must not block the fleet
+        except Exception as exc:
             print("✗")
             print(f"    {exc}", file=sys.stderr)
             failed.append(tool)
@@ -129,9 +131,8 @@ def _platform() -> tuple[str, str]:
         platform.machine().lower()
     )
     if not os_name or not arch:
-        raise RuntimeError(
-            f"unsupported platform: {platform.system()} {platform.machine()}"
-        )
+        message = f"unsupported platform: {platform.system()} {platform.machine()}"
+        raise RuntimeError(message)
     return os_name, arch
 
 
@@ -166,25 +167,28 @@ def _fetch_latest_release(repo: str, *, timeout: float) -> Release:
         payload = json.load(response)
     tag = payload.get("tag_name")
     if not isinstance(tag, str) or not tag:
-        raise RuntimeError(f"{repo}: latest release has no tag_name")
+        message = f"{repo}: latest release has no tag_name"
+        raise RuntimeError(message)
     return Release(tag, f"https://github.com/{repo}/releases/download/{tag}")
 
 
 def _download(url: str, destination: Path, *, timeout: float) -> None:
-    with urllib.request.urlopen(_request(url), timeout=timeout) as response:
-        with destination.open("wb") as output:
-            shutil.copyfileobj(response, output)
+    with (
+        urllib.request.urlopen(_request(url), timeout=timeout) as response,
+        destination.open("wb") as output,
+    ):
+        shutil.copyfileobj(response, output)
 
 
 def _parse_checksums(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
     for line in text.splitlines():
         parts = line.strip().split(maxsplit=1)
-        if len(parts) != 2:
+        if len(parts) != CHECKSUM_FIELD_COUNT:
             continue
         digest, name = parts
         name = name.lstrip("*")
-        if len(digest) == 64:
+        if len(digest) == SHA256_HEX_LENGTH:
             result[name] = digest.lower()
     return result
 
@@ -213,16 +217,14 @@ def _install_tool(tool: str, *, bin_dir: Path, timeout: float) -> str:
         for binary, asset in asset_names.items():
             expected = checksums.get(asset)
             if not expected:
-                raise RuntimeError(
-                    f"{tool} {release.tag}: checksum missing for {asset}"
-                )
+                message = f"{tool} {release.tag}: checksum missing for {asset}"
+                raise RuntimeError(message)
             path = stage / asset
             _download(f"{release.download_base}/{asset}", path, timeout=timeout)
             actual = _sha256(path)
             if actual != expected:
-                raise RuntimeError(
-                    f"{tool} {release.tag}: checksum mismatch for {asset}"
-                )
+                message = f"{tool} {release.tag}: checksum mismatch for {asset}"
+                raise RuntimeError(message)
             path.chmod(0o755)
             staged[binary] = path
         _atomic_replace(staged, bin_dir=bin_dir, stage=stage)
@@ -239,15 +241,15 @@ def _atomic_replace(staged: dict[str, Path], *, bin_dir: Path, stage: Path) -> N
             target = bin_dir / binary
             if target.exists():
                 backup = stage / f"{binary}.previous"
-                os.replace(target, backup)
+                target.replace(backup)
                 backups[binary] = backup
         for binary, source in staged.items():
-            os.replace(source, bin_dir / binary)
+            source.replace(bin_dir / binary)
             installed.append(binary)
     except Exception:
         for binary in installed:
             (bin_dir / binary).unlink(missing_ok=True)
         for binary, backup in backups.items():
             if backup.exists():
-                os.replace(backup, bin_dir / binary)
+                backup.replace(bin_dir / binary)
         raise

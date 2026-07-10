@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+
 import pytest
 
 from orrery_heartbeat import check_update, cli, env, mark_installed
@@ -36,7 +37,11 @@ def test_load_env_exports_crux_binary_overrides(tmp_path):
 
 def test_upgrade_help_has_no_network_side_effect(monkeypatch, capsys):
     calls = []
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        cli.urllib.request,
+        "urlopen",
+        lambda *args, **_kwargs: calls.append(args),
+    )
     with pytest.raises(SystemExit) as exc_info:
         cli.run(["--help"])
     assert exc_info.value.code == 0
@@ -48,7 +53,11 @@ def test_upgrade_bare_command_prints_release_plan_without_network(
     monkeypatch, capsys, tmp_path
 ):
     calls = []
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        cli.urllib.request,
+        "urlopen",
+        lambda *args, **_kwargs: calls.append(args),
+    )
     cli.run(["--bin-dir", str(tmp_path)])
     assert calls == []
     out = capsys.readouterr().out
@@ -63,7 +72,7 @@ def test_upgrade_selected_tool_installs_verified_asset(monkeypatch, tmp_path, ca
     metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
     checksums = f"{checksum}  crux-darwin-arm64\n".encode()
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, **_kwargs):
         url = request.full_url
         if url.endswith("/releases/latest"):
             return _Response(metadata)
@@ -92,7 +101,7 @@ def test_checksum_failure_preserves_existing_binary(monkeypatch, tmp_path):
     metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
     checksums = f"{'0' * 64}  crux-darwin-arm64\n".encode()
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, **_kwargs):
         url = request.full_url
         if url.endswith("/releases/latest"):
             return _Response(metadata)
@@ -115,7 +124,7 @@ def test_multi_asset_repo_installs_all_or_none(monkeypatch, tmp_path):
         for name, data in payloads.items()
     ).encode()
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, **_kwargs):
         url = request.full_url
         if url.endswith("/releases/latest"):
             return _Response(json.dumps({"tag_name": "v9"}).encode())
@@ -132,7 +141,11 @@ def test_multi_asset_repo_installs_all_or_none(monkeypatch, tmp_path):
 
 def test_upgrade_unknown_tool_exits_before_network(monkeypatch):
     calls = []
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(
+        cli.urllib.request,
+        "urlopen",
+        lambda *args, **_kwargs: calls.append(args),
+    )
     with pytest.raises(SystemExit) as exc_info:
         cli.run(["--apply", "nope"])
     assert exc_info.value.code == 2
