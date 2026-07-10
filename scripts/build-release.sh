@@ -22,19 +22,19 @@ mkdir -p "${OUTPUT_DIR}" "${BUILD_DIR}/dist" "${BUILD_DIR}/work" "${BUILD_DIR}/s
 build_binary() {
   local name="$1"
   local entry="$2"
-  uv run --group freeze pyinstaller --noconfirm --onefile --clean \
+  uv run --group freeze pyinstaller --noconfirm --onedir --clean \
     --paths "${ROOT}/src" --collect-submodules orrery_heartbeat \
     --collect-data certifi \
     --name "${name}" --distpath "${BUILD_DIR}/dist" \
     --workpath "${BUILD_DIR}/work/${name}" --specpath "${BUILD_DIR}/spec" \
     "${ROOT}/${entry}"
-  install -m 0755 "${BUILD_DIR}/dist/${name}" "${OUTPUT_DIR}/${name}-${platform}-${arch}"
+  tar -C "${BUILD_DIR}/dist" -czf "${OUTPUT_DIR}/${name}-${platform}-${arch}.tar.gz" "${name}"
 }
 
 build_binary orrery-upgrade scripts/orrery_upgrade_entry.py
 build_binary orrery-env scripts/orrery_env_entry.py
 
 if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
-  CI=1 XDG_CACHE_HOME="$(mktemp -d)" "${OUTPUT_DIR}/orrery-upgrade-${platform}-${arch}" --help >/dev/null
-  "${OUTPUT_DIR}/orrery-env-${platform}-${arch}" --help >/dev/null
+  CI=1 XDG_CACHE_HOME="$(mktemp -d)" "${BUILD_DIR}/dist/orrery-upgrade/orrery-upgrade" --help >/dev/null
+  "${BUILD_DIR}/dist/orrery-env/orrery-env" --help >/dev/null
 fi

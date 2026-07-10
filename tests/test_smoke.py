@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,16 @@ class _Response(io.BytesIO):
 
     def __exit__(self, *_args):
         self.close()
+
+
+def _bundle(name: str, content: bytes) -> bytes:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        info = tarfile.TarInfo(f"{name}/{name}")
+        info.mode = 0o755
+        info.size = len(content)
+        archive.addfile(info, io.BytesIO(content))
+    return stream.getvalue()
 
 
 def test_ssl_context_uses_bundled_roots_by_default(monkeypatch):
@@ -96,9 +107,10 @@ def test_upgrade_bare_command_prints_release_plan_without_network(
 
 def test_upgrade_selected_tool_installs_verified_asset(monkeypatch, tmp_path, capsys):
     binary = b"frozen-crux"
-    checksum = hashlib.sha256(binary).hexdigest()
+    bundle = _bundle("crux", binary)
+    checksum = hashlib.sha256(bundle).hexdigest()
     metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
-    checksums = f"{checksum}  crux-darwin-arm64\n".encode()
+    checksums = f"{checksum}  crux-darwin-arm64.tar.gz\n".encode()
 
     def fake_urlopen(request, **_kwargs):
         url = request.full_url
@@ -106,19 +118,20 @@ def test_upgrade_selected_tool_installs_verified_asset(monkeypatch, tmp_path, ca
             return _Response(metadata)
         if url.endswith("/SHA256SUMS"):
             return _Response(checksums)
-        if url.endswith("/crux-darwin-arm64"):
-            return _Response(binary)
+        if url.endswith("/crux-darwin-arm64.tar.gz"):
+            return _Response(bundle)
         raise AssertionError(url)
 
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     cli.run(["--apply", "--bin-dir", str(tmp_path), "crux"])
 
-    assert (tmp_path / "crux").read_bytes() == binary
+    assert (tmp_path / "crux").is_symlink()
+    assert (tmp_path / "crux").resolve().read_bytes() == binary
     assert (tmp_path / "crux").stat().st_mode & 0o111
     receipt = load(receipt_path("crux", tmp_path))
     assert receipt.tag == "v1.2.3"
-    assert receipt.assets[0].sha256 == checksum
+    assert receipt.assets[0].release_sha256 == checksum
     assert "1 repositories up to date" in capsys.readouterr().out
 
 
@@ -126,7 +139,7 @@ def test_checksum_failure_preserves_existing_binary(monkeypatch, tmp_path):
     existing = tmp_path / "crux"
     existing.write_bytes(b"old")
     metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
-    checksums = f"{'0' * 64}  crux-darwin-arm64\n".encode()
+    checksums = f"{'0' * 64}  crux-darwin-arm64.tar.gz\n".encode()
 
     def fake_urlopen(request, **_kwargs):
         url = request.full_url
@@ -145,7 +158,10 @@ def test_checksum_failure_preserves_existing_binary(monkeypatch, tmp_path):
 
 
 def test_multi_asset_repo_installs_all_or_none(monkeypatch, tmp_path):
-    payloads = {"docket-darwin-arm64": b"docket", "pm-darwin-arm64": b"pm"}
+    payloads = {
+        "docket-darwin-arm64.tar.gz": _bundle("docket", b"docket"),
+        "pm-darwin-arm64.tar.gz": _bundle("pm", b"pm"),
+    }
     checksum_text = "".join(
         f"{hashlib.sha256(data).hexdigest()}  {name}\n"
         for name, data in payloads.items()
@@ -162,8 +178,8 @@ def test_multi_asset_repo_installs_all_or_none(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     cli._install_tool("docket", bin_dir=tmp_path, timeout=1)
-    assert (tmp_path / "docket").read_bytes() == b"docket"
-    assert (tmp_path / "pm").read_bytes() == b"pm"
+    assert (tmp_path / "docket").resolve().read_bytes() == b"docket"
+    assert (tmp_path / "pm").resolve().read_bytes() == b"pm"
 
 
 def test_upgrade_unknown_tool_exits_before_network(monkeypatch):
@@ -180,16 +196,16 @@ def test_upgrade_unknown_tool_exits_before_network(monkeypatch):
 
 
 def test_upgrade_pinned_tag_skips_latest_api(monkeypatch, tmp_path):
-    binary = b"frozen-crux"
-    checksum = hashlib.sha256(binary).hexdigest()
-    checksums = f"{checksum}  crux-darwin-arm64\n".encode()
+    bundle = _bundle("crux", b"frozen-crux")
+    checksum = hashlib.sha256(bundle).hexdigest()
+    checksums = f"{checksum}  crux-darwin-arm64.tar.gz\n".encode()
     urls = []
 
     def fake_urlopen(request, **_kwargs):
         urls.append(request.full_url)
         if request.full_url.endswith("/SHA256SUMS"):
             return _Response(checksums)
-        return _Response(binary)
+        return _Response(bundle)
 
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
@@ -215,21 +231,22 @@ def test_upgrade_rejects_non_version_tag_before_network(monkeypatch):
 
 def test_verify_detects_tampered_binary(monkeypatch, tmp_path, capsys):
     binary = b"frozen-crux"
-    checksum = hashlib.sha256(binary).hexdigest()
+    bundle = _bundle("crux", binary)
+    checksum = hashlib.sha256(bundle).hexdigest()
     metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
-    checksums = f"{checksum}  crux-darwin-arm64\n".encode()
+    checksums = f"{checksum}  crux-darwin-arm64.tar.gz\n".encode()
 
     def fake_urlopen(request, **_kwargs):
         if request.full_url.endswith("/releases/latest"):
             return _Response(metadata)
         if request.full_url.endswith("/SHA256SUMS"):
             return _Response(checksums)
-        return _Response(binary)
+        return _Response(bundle)
 
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     cli.run(["--apply", "--bin-dir", str(tmp_path), "crux"])
-    (tmp_path / "crux").write_bytes(b"tampered")
+    (tmp_path / "crux").resolve().write_bytes(b"tampered")
 
     with pytest.raises(SystemExit) as exc_info:
         cli.run(["--verify", "--bin-dir", str(tmp_path), "crux"])
@@ -238,7 +255,10 @@ def test_verify_detects_tampered_binary(monkeypatch, tmp_path, capsys):
 
 
 def test_verify_accepts_multi_asset_receipt(monkeypatch, tmp_path, capsys):
-    payloads = {"docket-darwin-arm64": b"docket", "pm-darwin-arm64": b"pm"}
+    payloads = {
+        "docket-darwin-arm64.tar.gz": _bundle("docket", b"docket"),
+        "pm-darwin-arm64.tar.gz": _bundle("pm", b"pm"),
+    }
     checksum_text = "".join(
         f"{hashlib.sha256(data).hexdigest()}  {name}\n"
         for name, data in payloads.items()
@@ -259,14 +279,14 @@ def test_verify_accepts_multi_asset_receipt(monkeypatch, tmp_path, capsys):
 
 
 def test_verify_rejects_receipt_from_another_pinned_tag(monkeypatch, tmp_path, capsys):
-    binary = b"frozen-crux"
-    checksum = hashlib.sha256(binary).hexdigest()
-    checksums = f"{checksum}  crux-darwin-arm64\n".encode()
+    bundle = _bundle("crux", b"frozen-crux")
+    checksum = hashlib.sha256(bundle).hexdigest()
+    checksums = f"{checksum}  crux-darwin-arm64.tar.gz\n".encode()
 
     def fake_urlopen(request, **_kwargs):
         if request.full_url.endswith("/SHA256SUMS"):
             return _Response(checksums)
-        return _Response(binary)
+        return _Response(bundle)
 
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)

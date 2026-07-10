@@ -7,10 +7,11 @@ import json
 import os
 import shutil
 import sys
+import tarfile
 import tempfile
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import _ssl_context
 from .receipt import (
@@ -18,9 +19,11 @@ from .receipt import (
     InstallReceipt,
     dumps,
     load,
+    payload_name,
     receipt_name,
     receipt_path,
     sha256,
+    tree_sha256,
     verify,
 )
 
@@ -175,7 +178,7 @@ def _print_plan(tools: list[ToolRequest], bin_dir: Path) -> None:
         tool = request.tool
         desired = request.tag or "latest"
         assets = ", ".join(
-            f"{name}-{platform_name}-{arch} -> {bin_dir / name}"
+            f"{name}-{platform_name}-{arch}.tar.gz -> {bin_dir / name}"
             for name in TOOL_ASSETS[tool]
         )
         print(f"{tool}: {desired} verified GitHub Release ({assets})")
@@ -281,7 +284,8 @@ def _install_tool(
     platform_name, arch = _platform()
     release = _fetch_release(_repo(tool), tag=tag, timeout=timeout)
     asset_names = {
-        binary: f"{binary}-{platform_name}-{arch}" for binary in TOOL_ASSETS[tool]
+        binary: f"{binary}-{platform_name}-{arch}.tar.gz"
+        for binary in TOOL_ASSETS[tool]
     }
     bin_dir.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".orrery-{tool}-", dir=bin_dir))
@@ -289,7 +293,9 @@ def _install_tool(
         checksum_file = stage / "SHA256SUMS"
         _download(f"{release.download_base}/SHA256SUMS", checksum_file, timeout=timeout)
         checksums = _parse_checksums(checksum_file.read_text(encoding="utf-8"))
-        staged: dict[str, Path] = {}
+        payload = stage / payload_name(tool)
+        payload.mkdir()
+        release_hashes: dict[str, str] = {}
         for binary, asset in asset_names.items():
             expected = checksums.get(asset)
             if not expected:
@@ -301,8 +307,17 @@ def _install_tool(
             if actual != expected:
                 message = f"{tool} {release.tag}: checksum mismatch for {asset}"
                 raise RuntimeError(message)
-            path.chmod(0o755)
-            staged[binary] = path
+            _extract_bundle(path, payload=payload, binary=binary)
+            release_hashes[binary] = expected
+        staged: dict[str, Path] = {payload_name(tool): payload}
+        for binary in TOOL_ASSETS[tool]:
+            launcher = payload / binary / binary
+            if not launcher.is_file() or not launcher.stat().st_mode & 0o111:
+                message = f"{tool} {release.tag}: bundle launcher invalid: {launcher}"
+                raise RuntimeError(message)
+            link = stage / binary
+            link.symlink_to(f"{payload_name(tool)}/{binary}/{binary}")
+            staged[binary] = link
         receipt = InstallReceipt(
             repo=_repo(tool),
             tag=release.tag,
@@ -312,7 +327,9 @@ def _install_tool(
                     name=binary,
                     release_asset=asset_names[binary],
                     target=bin_dir / binary,
-                    sha256=checksums[asset_names[binary]],
+                    bundle=bin_dir / payload_name(tool) / binary,
+                    release_sha256=release_hashes[binary],
+                    tree_sha256=tree_sha256(payload / binary),
                 )
                 for binary in TOOL_ASSETS[tool]
             ),
@@ -324,6 +341,28 @@ def _install_tool(
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     return receipt
+
+
+def _extract_bundle(archive: Path, *, payload: Path, binary: str) -> None:
+    """Extract one release bundle while rejecting cross-bundle archive paths."""
+    try:
+        with tarfile.open(archive, "r:gz") as bundle:
+            members = bundle.getmembers()
+            if not members:
+                raise RuntimeError(f"empty release bundle: {archive.name}")
+            for member in members:
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or ".." in path.parts or not path.parts:
+                    raise RuntimeError(
+                        f"unsafe path in release bundle {archive.name}: {member.name}"
+                    )
+                if path.parts[0] != binary:
+                    raise RuntimeError(
+                        f"unexpected path in release bundle {archive.name}: {member.name}"
+                    )
+            bundle.extractall(payload, members=members, filter="data")
+    except (OSError, tarfile.TarError) as exc:
+        raise RuntimeError(f"invalid release bundle {archive.name}: {exc}") from exc
 
 
 def _atomic_replace(staged: dict[str, Path], *, bin_dir: Path, stage: Path) -> None:
