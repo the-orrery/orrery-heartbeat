@@ -1,142 +1,136 @@
+import hashlib
+import io
 import json
-import subprocess
-
 import pytest
 
 from orrery_heartbeat import check_update, cli, env, mark_installed
 
 
+class _Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
 def test_check_update_noop_in_ci(monkeypatch):
-    """check_update does nothing in CI (env CI=true)."""
     monkeypatch.setenv("CI", "true")
     check_update("test", "the-orrery/test")
 
 
 def test_load_env_missing_file(tmp_path):
-    result = env.load_env(tmp_path / "nonexistent.toml")
-    assert result == {}
+    assert env.load_env(tmp_path / "nonexistent.toml") == {}
 
 
-def test_upgrade_help_has_no_install_side_effect(monkeypatch, capsys):
+def test_upgrade_help_has_no_network_side_effect(monkeypatch, capsys):
     calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
     with pytest.raises(SystemExit) as exc_info:
         cli.run(["--help"])
-
     assert exc_info.value.code == 0
     assert calls == []
     assert "usage: orrery-upgrade" in capsys.readouterr().out
 
 
-def test_upgrade_bare_command_prints_plan_without_install(monkeypatch, capsys):
+def test_upgrade_bare_command_prints_release_plan_without_network(
+    monkeypatch, capsys, tmp_path
+):
     calls = []
-
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args[0], 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-
-    cli.run([])
-
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
+    cli.run(["--bin-dir", str(tmp_path)])
     assert calls == []
     out = capsys.readouterr().out
-    assert "uv tool install --from" in out
+    assert "crux: latest verified GitHub Release" in out
+    assert "uv tool install" not in out
     assert "Run `orrery-upgrade --apply` to install." in out
 
 
-def test_upgrade_dry_run_has_no_install_side_effect(monkeypatch, capsys):
-    calls = []
+def test_upgrade_selected_tool_installs_verified_asset(monkeypatch, tmp_path, capsys):
+    binary = b"frozen-crux"
+    checksum = hashlib.sha256(binary).hexdigest()
+    metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
+    checksums = f"{checksum}  crux-darwin-arm64\n".encode()
 
-    def fake_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args[0], 0, "", "")
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        if url.endswith("/releases/latest"):
+            return _Response(metadata)
+        if url.endswith("/SHA256SUMS"):
+            return _Response(checksums)
+        if url.endswith("/crux-darwin-arm64"):
+            return _Response(binary)
+        raise AssertionError(url)
 
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-
-    cli.run(["--dry-run", "crux"])
-
-    assert calls == []
-    out = capsys.readouterr().out
-    assert _crux_install_command_text() in out
-
-
-def test_upgrade_selected_tool_requires_apply(monkeypatch, capsys):
-    calls = []
-    monkeypatch.setattr(
-        cli.subprocess, "run", lambda *args, **_kwargs: calls.append(args)
-    )
-
-    cli.run(["crux"])
-
-    assert calls == []
-    assert _crux_install_command_text() in capsys.readouterr().out
-
-
-def test_upgrade_apply_selected_tool_installs_only_that_tool(monkeypatch, capsys):
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(cli, "_fetch_latest_sha", lambda _repo: "abc123")
+    monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     installed = []
-    monkeypatch.setattr(
-        cli, "mark_installed", lambda tool, sha: installed.append((tool, sha))
-    )
+    monkeypatch.setattr(cli, "mark_installed", lambda *args: installed.append(args))
 
-    cli.run(["--apply", "crux"])
+    cli.run(["--apply", "--bin-dir", str(tmp_path), "crux"])
 
-    assert len(calls) == 1
-    command, kwargs = calls[0]
-    assert command == [
-        "uv",
-        "tool",
-        "install",
-        "--from",
-        "git+ssh://git@github.com/the-orrery/crux.git",
-        "crux",
-        "--force",
-        "--quiet",
-    ]
-    assert kwargs["timeout"] == 120.0
-    assert installed == [("crux", "abc123")]
-    assert "1 tools up to date" in capsys.readouterr().out
+    assert (tmp_path / "crux").read_bytes() == binary
+    assert (tmp_path / "crux").stat().st_mode & 0o111
+    assert installed == [("crux", "v1.2.3")]
+    assert "1 repositories up to date" in capsys.readouterr().out
 
 
-def test_upgrade_unknown_tool_exits_before_install(monkeypatch):
+def test_checksum_failure_preserves_existing_binary(monkeypatch, tmp_path):
+    existing = tmp_path / "crux"
+    existing.write_bytes(b"old")
+    metadata = json.dumps({"tag_name": "v1.2.3"}).encode()
+    checksums = f"{'0' * 64}  crux-darwin-arm64\n".encode()
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        if url.endswith("/releases/latest"):
+            return _Response(metadata)
+        if url.endswith("/SHA256SUMS"):
+            return _Response(checksums)
+        return _Response(b"tampered")
+
+    monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        cli._install_tool("crux", bin_dir=tmp_path, timeout=1)
+    assert existing.read_bytes() == b"old"
+
+
+def test_multi_asset_repo_installs_all_or_none(monkeypatch, tmp_path):
+    payloads = {"docket-darwin-arm64": b"docket", "pm-darwin-arm64": b"pm"}
+    checksum_text = "".join(
+        f"{hashlib.sha256(data).hexdigest()}  {name}\n"
+        for name, data in payloads.items()
+    ).encode()
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        if url.endswith("/releases/latest"):
+            return _Response(json.dumps({"tag_name": "v9"}).encode())
+        if url.endswith("/SHA256SUMS"):
+            return _Response(checksum_text)
+        return _Response(payloads[url.rsplit("/", 1)[-1]])
+
+    monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    cli._install_tool("docket", bin_dir=tmp_path, timeout=1)
+    assert (tmp_path / "docket").read_bytes() == b"docket"
+    assert (tmp_path / "pm").read_bytes() == b"pm"
+
+
+def test_upgrade_unknown_tool_exits_before_network(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        cli.subprocess, "run", lambda *args, **_kwargs: calls.append(args)
-    )
-
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
     with pytest.raises(SystemExit) as exc_info:
         cli.run(["--apply", "nope"])
-
     assert exc_info.value.code == 2
     assert calls == []
 
 
-def test_mark_installed_records_latest_sha(tmp_path, monkeypatch):
+def test_mark_installed_records_release_tag(tmp_path, monkeypatch):
     monkeypatch.setattr("orrery_heartbeat._CACHE_DIR", tmp_path)
-
-    mark_installed("crux", "abc123")
-
+    mark_installed("crux", "v1.2.3")
     state = json.loads((tmp_path / "crux" / "state.json").read_text())
-    assert state["installed_sha"] == "abc123"
-    assert state["latest_sha"] == "abc123"
-
-
-def _crux_install_command_text():
-    return (
-        "uv tool install --from "
-        "git+ssh://git@github.com/the-orrery/crux.git crux --force"
-    )
+    assert state["installed_tag"] == "v1.2.3"
+    assert state["latest_tag"] == "v1.2.3"
