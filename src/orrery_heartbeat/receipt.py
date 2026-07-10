@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,7 +67,7 @@ def tree_sha256(root: Path) -> str:
         digest.update(b"\0")
         if path.is_symlink():
             digest.update(b"link\0")
-            digest.update(os.readlink(path).encode())
+            digest.update(str(path.readlink()).encode())
         elif path.is_dir():
             digest.update(b"dir")
         elif path.is_file():
@@ -138,46 +137,53 @@ def verify(receipt: InstallReceipt, *, tool: str, bin_dir: Path) -> list[str]:
             errors.append(f"duplicate asset: {asset.name}")
             continue
         seen.add(asset.name)
-        expected_target = root / asset.name
-        expected_bundle = expected_payload / asset.name
-        if asset.target != expected_target:
-            errors.append(
-                f"{asset.name}: target is {asset.target}, expected {expected_target}"
-            )
-            continue
-        if asset.bundle != expected_bundle:
-            errors.append(
-                f"{asset.name}: bundle is {asset.bundle}, expected {expected_bundle}"
-            )
-            continue
-        expected_link = f"{payload_name(tool)}/{asset.name}/{asset.name}"
-        if not asset.target.is_symlink():
-            errors.append(f"{asset.name}: launcher symlink missing: {asset.target}")
-        elif os.readlink(asset.target) != expected_link:
-            errors.append(
-                f"{asset.name}: launcher points to {os.readlink(asset.target)}, "
-                f"expected {expected_link}"
-            )
-        launcher = asset.bundle / asset.name
-        if not launcher.is_file():
-            errors.append(f"{asset.name}: bundle launcher missing: {launcher}")
-        elif not launcher.stat().st_mode & 0o111:
-            errors.append(
-                f"{asset.name}: bundle launcher is not executable: {launcher}"
-            )
-        if not _valid_sha256(asset.release_sha256):
-            errors.append(f"{asset.name}: invalid release SHA256 in receipt")
-        try:
-            actual = tree_sha256(asset.bundle)
-        except RuntimeError as exc:
-            errors.append(str(exc))
-        else:
-            if actual != asset.tree_sha256:
-                errors.append(
-                    f"{asset.name}: bundle checksum mismatch "
-                    f"({actual}, expected {asset.tree_sha256})"
-                )
+        errors.extend(
+            _verify_asset(asset, tool=tool, root=root, payload=expected_payload)
+        )
     return errors
+
+
+def _verify_asset(
+    asset: InstalledAsset, *, tool: str, root: Path, payload: Path
+) -> list[str]:
+    errors: list[str] = []
+    expected_target = root / asset.name
+    expected_bundle = payload / asset.name
+    if asset.target != expected_target:
+        return [f"{asset.name}: target is {asset.target}, expected {expected_target}"]
+    if asset.bundle != expected_bundle:
+        return [f"{asset.name}: bundle is {asset.bundle}, expected {expected_bundle}"]
+
+    expected_link = Path(payload_name(tool)) / asset.name / asset.name
+    if not asset.target.is_symlink():
+        errors.append(f"{asset.name}: launcher symlink missing: {asset.target}")
+    elif (actual_link := asset.target.readlink()) != expected_link:
+        errors.append(
+            f"{asset.name}: launcher points to {actual_link}, expected {expected_link}"
+        )
+
+    launcher = asset.bundle / asset.name
+    if not launcher.is_file():
+        errors.append(f"{asset.name}: bundle launcher missing: {launcher}")
+    elif not launcher.stat().st_mode & 0o111:
+        errors.append(f"{asset.name}: bundle launcher is not executable: {launcher}")
+    if not _valid_sha256(asset.release_sha256):
+        errors.append(f"{asset.name}: invalid release SHA256 in receipt")
+    errors.extend(_verify_bundle(asset))
+    return errors
+
+
+def _verify_bundle(asset: InstalledAsset) -> list[str]:
+    try:
+        actual = tree_sha256(asset.bundle)
+    except RuntimeError as exc:
+        return [str(exc)]
+    if actual != asset.tree_sha256:
+        return [
+            f"{asset.name}: bundle checksum mismatch "
+            f"({actual}, expected {asset.tree_sha256})"
+        ]
+    return []
 
 
 def installed_tag(tool: str, bin_dir: Path) -> str:
