@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import _ssl_context
+from .launchers import launcher_script
 from .receipt import (
     InstalledAsset,
     InstallReceipt,
@@ -315,9 +316,10 @@ def _install_tool(
             if not launcher.is_file() or not launcher.stat().st_mode & 0o111:
                 message = f"{tool} {release.tag}: bundle launcher invalid: {launcher}"
                 raise RuntimeError(message)
-            link = stage / binary
-            link.symlink_to(f"{payload_name(tool)}/{binary}/{binary}")
-            staged[binary] = link
+            wrapper = stage / binary
+            wrapper.write_text(launcher_script(tool, binary), encoding="utf-8")
+            wrapper.chmod(0o755)
+            staged[binary] = wrapper
         receipt = InstallReceipt(
             repo=_repo(tool),
             tag=release.tag,

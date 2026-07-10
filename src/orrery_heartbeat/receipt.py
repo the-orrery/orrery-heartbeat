@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .launchers import launcher_script
+
 SCHEMA_VERSION = 2
 SHA256_HEX_LENGTH = 64
 
@@ -155,12 +157,17 @@ def _verify_asset(
         return [f"{asset.name}: bundle is {asset.bundle}, expected {expected_bundle}"]
 
     expected_link = Path(payload_name(tool)) / asset.name / asset.name
-    if not asset.target.is_symlink():
-        errors.append(f"{asset.name}: launcher symlink missing: {asset.target}")
-    elif (actual_link := asset.target.readlink()) != expected_link:
-        errors.append(
-            f"{asset.name}: launcher points to {actual_link}, expected {expected_link}"
-        )
+    if asset.target.is_symlink():
+        if (actual_link := asset.target.readlink()) != expected_link:
+            errors.append(
+                f"{asset.name}: launcher points to {actual_link}, expected {expected_link}"
+            )
+    elif not asset.target.is_file():
+        errors.append(f"{asset.name}: launcher missing: {asset.target}")
+    elif asset.target.read_text(encoding="utf-8") != launcher_script(tool, asset.name):
+        errors.append(f"{asset.name}: launcher wrapper content mismatch")
+    elif not asset.target.stat().st_mode & 0o111:
+        errors.append(f"{asset.name}: launcher wrapper is not executable")
 
     launcher = asset.bundle / asset.name
     if not launcher.is_file():

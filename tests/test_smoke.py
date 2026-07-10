@@ -126,8 +126,10 @@ def test_upgrade_selected_tool_installs_verified_asset(monkeypatch, tmp_path, ca
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     cli.run(["--apply", "--bin-dir", str(tmp_path), "crux"])
 
-    assert (tmp_path / "crux").is_symlink()
-    assert (tmp_path / "crux").resolve().read_bytes() == binary
+    assert (tmp_path / "crux").is_file()
+    assert not (tmp_path / "crux").is_symlink()
+    assert ".orrery-crux.payload/crux/crux" in (tmp_path / "crux").read_text()
+    assert (tmp_path / ".orrery-crux.payload" / "crux" / "crux").read_bytes() == binary
     assert (tmp_path / "crux").stat().st_mode & 0o111
     receipt = load(receipt_path("crux", tmp_path))
     assert receipt.tag == "v1.2.3"
@@ -178,8 +180,8 @@ def test_multi_asset_repo_installs_all_or_none(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     cli._install_tool("docket", bin_dir=tmp_path, timeout=1)
-    assert (tmp_path / "docket").resolve().read_bytes() == b"docket"
-    assert (tmp_path / "pm").resolve().read_bytes() == b"pm"
+    assert ".orrery-docket.payload/docket/docket" in (tmp_path / "docket").read_text()
+    assert ".orrery-docket.payload/pm/pm" in (tmp_path / "pm").read_text()
 
 
 def test_upgrade_unknown_tool_exits_before_network(monkeypatch):
@@ -246,7 +248,7 @@ def test_verify_detects_tampered_binary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
     cli.run(["--apply", "--bin-dir", str(tmp_path), "crux"])
-    (tmp_path / "crux").resolve().write_bytes(b"tampered")
+    (tmp_path / ".orrery-crux.payload" / "crux" / "crux").write_bytes(b"tampered")
 
     with pytest.raises(SystemExit) as exc_info:
         cli.run(["--verify", "--bin-dir", str(tmp_path), "crux"])
@@ -276,6 +278,29 @@ def test_verify_accepts_multi_asset_receipt(monkeypatch, tmp_path, capsys):
     cli.run(["--apply", "--bin-dir", str(tmp_path), "docket"])
     cli.run(["--verify", "--bin-dir", str(tmp_path), "docket"])
     assert "docket: ✓ v9" in capsys.readouterr().out
+
+
+def test_verify_accepts_legacy_payload_symlink(monkeypatch, tmp_path, capsys):
+    bundle = _bundle("crux", b"frozen-crux")
+    checksum = hashlib.sha256(bundle).hexdigest()
+    checksums = f"{checksum}  crux-darwin-arm64.tar.gz\n".encode()
+
+    def fake_urlopen(request, **_kwargs):
+        if request.full_url.endswith("/releases/latest"):
+            return _Response(json.dumps({"tag_name": "v1.2.3"}).encode())
+        if request.full_url.endswith("/SHA256SUMS"):
+            return _Response(checksums)
+        return _Response(bundle)
+
+    monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    cli.run(["--apply", "--bin-dir", str(tmp_path), "crux"])
+    launcher = tmp_path / "crux"
+    launcher.unlink()
+    launcher.symlink_to(".orrery-crux.payload/crux/crux")
+
+    cli.run(["--verify", "--bin-dir", str(tmp_path), "crux"])
+    assert "crux: ✓ v1.2.3" in capsys.readouterr().out
 
 
 def test_verify_rejects_receipt_from_another_pinned_tag(monkeypatch, tmp_path, capsys):
