@@ -18,6 +18,24 @@ Apply the upgrade explicitly:
 orrery-upgrade --apply
 ```
 
+## Local CLI timing
+
+Every installed entrypoint supports opt-in, local-only duration logging. Set
+`ORRERY_CLI_TIMING=1` in a shell or before one command:
+
+```bash
+ORRERY_CLI_TIMING=1 crux recall "example"
+ORRERY_CLI_TIMING=1 docket show OPS-9
+```
+
+Events are appended as JSON Lines to
+`$XDG_STATE_HOME/orrery/cli-timing.jsonl` (or
+`$HOME/.local/state/orrery/cli-timing.jsonl` when `XDG_STATE_HOME` is unset,
+or the path set in `ORRERY_CLI_TIMING_LOG`). Each event contains only the tool, entrypoint,
+start timestamp, duration in milliseconds, and exit code. Arguments, working
+directory, command output, and environment values are never recorded or sent
+anywhere. Logs rotate at 5 MiB into a single `.1` file.
+
 Useful read-only modes:
 
 ```
