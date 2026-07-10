@@ -23,7 +23,7 @@ Useful read-only modes:
 ```
 orrery-upgrade --help
 orrery-upgrade --dry-run crux rhizome
-orrery-upgrade --verify crux rhizome
+orrery-upgrade --verify crux@v0.1.2 rhizome@v0.1.2
 ```
 
 Upgrade selected tools by naming them:

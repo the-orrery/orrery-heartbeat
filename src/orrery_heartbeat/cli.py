@@ -92,14 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
 def run(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    tools = _select_tools(args.tools, parser, allow_tags=not args.verify)
+    tools = _select_tools(args.tools, parser, allow_tags=True)
     bin_dir = _bin_dir(args.bin_dir)
 
     if args.apply and args.verify:
         parser.error("--apply and --verify are mutually exclusive")
 
     if args.verify:
-        _verify_tools([item.tool for item in tools], bin_dir)
+        _verify_tools(tools, bin_dir)
         return
 
     if args.dry_run or not args.apply:
@@ -181,13 +181,16 @@ def _print_plan(tools: list[ToolRequest], bin_dir: Path) -> None:
         print(f"{tool}: {desired} verified GitHub Release ({assets})")
 
 
-def _verify_tools(tools: list[str], bin_dir: Path) -> None:
+def _verify_tools(tools: list[ToolRequest], bin_dir: Path) -> None:
     failed: list[str] = []
-    for tool in tools:
+    for request in tools:
+        tool = request.tool
         path = receipt_path(tool, bin_dir)
         try:
             receipt = load(path)
             errors = _verify_receipt(receipt, tool=tool, bin_dir=bin_dir)
+            if request.tag and receipt.tag != request.tag:
+                errors.append(f"tag is {receipt.tag}, expected {request.tag}")
         except RuntimeError as exc:
             errors = [str(exc)]
             receipt = None

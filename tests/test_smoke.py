@@ -258,6 +258,26 @@ def test_verify_accepts_multi_asset_receipt(monkeypatch, tmp_path, capsys):
     assert "docket: ✓ v9" in capsys.readouterr().out
 
 
+def test_verify_rejects_receipt_from_another_pinned_tag(monkeypatch, tmp_path, capsys):
+    binary = b"frozen-crux"
+    checksum = hashlib.sha256(binary).hexdigest()
+    checksums = f"{checksum}  crux-darwin-arm64\n".encode()
+
+    def fake_urlopen(request, **_kwargs):
+        if request.full_url.endswith("/SHA256SUMS"):
+            return _Response(checksums)
+        return _Response(binary)
+
+    monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    cli.run(["--apply", "--bin-dir", str(tmp_path), "crux@v1.2.3"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.run(["--verify", "--bin-dir", str(tmp_path), "crux@v1.2.2"])
+    assert exc_info.value.code == 1
+    assert "tag is v1.2.3, expected v1.2.2" in capsys.readouterr().err
+
+
 def test_atomic_replace_rolls_back_binary_group(monkeypatch, tmp_path):
     stage = tmp_path / "stage"
     stage.mkdir()
