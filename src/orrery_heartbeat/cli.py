@@ -13,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import mark_installed
+from . import _ssl_context, mark_installed
 
 ORG = "the-orrery"
 TOOL_ASSETS: dict[str, tuple[str, ...]] = {
@@ -163,7 +163,9 @@ def _request(url: str) -> urllib.request.Request:
 
 def _fetch_latest_release(repo: str, *, timeout: float) -> Release:
     url = f"https://api.github.com/repos/{repo}/releases/latest"
-    with urllib.request.urlopen(_request(url), timeout=timeout) as response:
+    with urllib.request.urlopen(
+        _request(url), timeout=timeout, context=_ssl_context()
+    ) as response:
         payload = json.load(response)
     tag = payload.get("tag_name")
     if not isinstance(tag, str) or not tag:
@@ -174,7 +176,9 @@ def _fetch_latest_release(repo: str, *, timeout: float) -> Release:
 
 def _download(url: str, destination: Path, *, timeout: float) -> None:
     with (
-        urllib.request.urlopen(_request(url), timeout=timeout) as response,
+        urllib.request.urlopen(
+            _request(url), timeout=timeout, context=_ssl_context()
+        ) as response,
         destination.open("wb") as output,
     ):
         shutil.copyfileobj(response, output)
