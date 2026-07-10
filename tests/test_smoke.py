@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import orrery_heartbeat
 from orrery_heartbeat import check_update, cli, env, mark_installed
 
 
@@ -13,6 +14,36 @@ class _Response(io.BytesIO):
 
     def __exit__(self, *_args):
         self.close()
+
+
+def test_ssl_context_uses_bundled_roots_by_default(monkeypatch):
+    calls = []
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    monkeypatch.setattr(orrery_heartbeat.certifi, "where", lambda: "/bundle/ca.pem")
+    monkeypatch.setattr(
+        orrery_heartbeat.ssl,
+        "create_default_context",
+        lambda **kwargs: calls.append(kwargs) or object(),
+    )
+
+    orrery_heartbeat._ssl_context()
+
+    assert calls == [{"cafile": "/bundle/ca.pem"}]
+
+
+def test_ssl_context_honors_operator_trust_store(monkeypatch):
+    calls = []
+    monkeypatch.setenv("SSL_CERT_FILE", "/operator/ca.pem")
+    monkeypatch.setattr(
+        orrery_heartbeat.ssl,
+        "create_default_context",
+        lambda **kwargs: calls.append(kwargs) or object(),
+    )
+
+    orrery_heartbeat._ssl_context()
+
+    assert calls == [{}]
 
 
 def test_check_update_noop_in_ci(monkeypatch):

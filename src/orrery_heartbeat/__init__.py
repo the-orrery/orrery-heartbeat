@@ -5,17 +5,27 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-__version__ = "0.2.0"
+import certifi
+
+__version__ = "0.2.1"
 
 _DEFAULT_HOURS = 6
 _CACHE_DIR = (
     Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "orrery-heartbeat"
 )
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Use bundled roots unless the operator supplied a custom trust store."""
+    if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def check_update(
@@ -66,7 +76,7 @@ def _fetch_latest_tag(repo: str) -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=3) as response:
+    with urllib.request.urlopen(request, timeout=3, context=_ssl_context()) as response:
         payload = json.load(response)
     tag = payload.get("tag_name")
     return tag if isinstance(tag, str) else ""

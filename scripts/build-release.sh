@@ -24,6 +24,7 @@ build_binary() {
   local entry="$2"
   uv run --group freeze pyinstaller --noconfirm --onefile --clean \
     --paths "${ROOT}/src" --collect-submodules orrery_heartbeat \
+    --collect-data certifi \
     --name "${name}" --distpath "${BUILD_DIR}/dist" \
     --workpath "${BUILD_DIR}/work/${name}" --specpath "${BUILD_DIR}/spec" \
     "${ROOT}/${entry}"
