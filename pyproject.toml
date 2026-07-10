@@ -4,8 +4,8 @@ build-backend = "uv_build"
 
 [project]
 name = "orrery-heartbeat"
-version = "0.2.1"
-description = "Lightweight update-check for orrery CLI tools"
+version = "0.3.0"
+description = "Verified release installer for Orrery CLI tools"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
