@@ -7,7 +7,7 @@ import ssl
 
 import certifi
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 
 def _ssl_context() -> ssl.SSLContext:

@@ -1,14 +1,17 @@
-"""Install receipts for verified Orrery release binaries."""
+"""Install receipts for verified Orrery release bundles."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SHA256_HEX_LENGTH = 64
 
 
 @dataclass(frozen=True)
@@ -16,7 +19,9 @@ class InstalledAsset:
     name: str
     release_asset: str
     target: Path
-    sha256: str
+    bundle: Path
+    release_sha256: str
+    tree_sha256: str
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,10 @@ def receipt_name(tool: str) -> str:
     return f".orrery-{tool}.release.json"
 
 
+def payload_name(tool: str) -> str:
+    return f".orrery-{tool}.payload"
+
+
 def receipt_path(tool: str, bin_dir: Path) -> Path:
     return bin_dir / receipt_name(tool)
 
@@ -40,6 +49,34 @@ def sha256(path: Path) -> str:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tree_sha256(root: Path) -> str:
+    """Hash bundle paths, types, modes, symlink targets, and file contents."""
+    if not root.is_dir():
+        raise RuntimeError(f"bundle missing: {root}")
+    digest = hashlib.sha256()
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
+        relative = path.relative_to(root).as_posix()
+        mode = path.lstat().st_mode
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(f"{stat.S_IMODE(mode):04o}".encode())
+        digest.update(b"\0")
+        if path.is_symlink():
+            digest.update(b"link\0")
+            digest.update(os.readlink(path).encode())
+        elif path.is_dir():
+            digest.update(b"dir")
+        elif path.is_file():
+            digest.update(b"file\0")
+            digest.update(sha256(path).encode())
+        else:
+            raise RuntimeError(f"unsupported bundle entry: {path}")
+        digest.update(b"\n")
     return digest.hexdigest()
 
 
@@ -54,7 +91,9 @@ def dumps(receipt: InstallReceipt) -> str:
                 "name": asset.name,
                 "release_asset": asset.release_asset,
                 "target": str(asset.target),
-                "sha256": asset.sha256,
+                "bundle": str(asset.bundle),
+                "release_sha256": asset.release_sha256,
+                "tree_sha256": asset.tree_sha256,
             }
             for asset in receipt.assets
         ],
@@ -93,27 +132,51 @@ def verify(receipt: InstallReceipt, *, tool: str, bin_dir: Path) -> list[str]:
 
     seen: set[str] = set()
     root = bin_dir.resolve()
+    expected_payload = root / payload_name(tool)
     for asset in receipt.assets:
         if asset.name in seen:
             errors.append(f"duplicate asset: {asset.name}")
             continue
         seen.add(asset.name)
         expected_target = root / asset.name
+        expected_bundle = expected_payload / asset.name
         if asset.target != expected_target:
             errors.append(
                 f"{asset.name}: target is {asset.target}, expected {expected_target}"
             )
             continue
-        if not asset.target.is_file():
-            errors.append(f"{asset.name}: binary missing: {asset.target}")
-            continue
-        if not asset.target.stat().st_mode & 0o111:
-            errors.append(f"{asset.name}: binary is not executable: {asset.target}")
-        actual = sha256(asset.target)
-        if actual != asset.sha256:
+        if asset.bundle != expected_bundle:
             errors.append(
-                f"{asset.name}: checksum mismatch ({actual}, expected {asset.sha256})"
+                f"{asset.name}: bundle is {asset.bundle}, expected {expected_bundle}"
             )
+            continue
+        expected_link = f"{payload_name(tool)}/{asset.name}/{asset.name}"
+        if not asset.target.is_symlink():
+            errors.append(f"{asset.name}: launcher symlink missing: {asset.target}")
+        elif os.readlink(asset.target) != expected_link:
+            errors.append(
+                f"{asset.name}: launcher points to {os.readlink(asset.target)}, "
+                f"expected {expected_link}"
+            )
+        launcher = asset.bundle / asset.name
+        if not launcher.is_file():
+            errors.append(f"{asset.name}: bundle launcher missing: {launcher}")
+        elif not launcher.stat().st_mode & 0o111:
+            errors.append(
+                f"{asset.name}: bundle launcher is not executable: {launcher}"
+            )
+        if not _valid_sha256(asset.release_sha256):
+            errors.append(f"{asset.name}: invalid release SHA256 in receipt")
+        try:
+            actual = tree_sha256(asset.bundle)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+        else:
+            if actual != asset.tree_sha256:
+                errors.append(
+                    f"{asset.name}: bundle checksum mismatch "
+                    f"({actual}, expected {asset.tree_sha256})"
+                )
     return errors
 
 
@@ -122,6 +185,12 @@ def installed_tag(tool: str, bin_dir: Path) -> str:
         return load(receipt_path(tool, bin_dir)).tag
     except RuntimeError:
         return ""
+
+
+def _valid_sha256(value: str) -> bool:
+    return len(value) == SHA256_HEX_LENGTH and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def _string(payload: dict[str, Any], key: str) -> str:
@@ -138,5 +207,7 @@ def _asset(payload: Any) -> InstalledAsset:
         name=_string(payload, "name"),
         release_asset=_string(payload, "release_asset"),
         target=Path(_string(payload, "target")),
-        sha256=_string(payload, "sha256"),
+        bundle=Path(_string(payload, "bundle")),
+        release_sha256=_string(payload, "release_sha256"),
+        tree_sha256=_string(payload, "tree_sha256"),
     )
