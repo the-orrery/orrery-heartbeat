@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -13,7 +12,17 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import _ssl_context, mark_installed
+from . import _ssl_context
+from .receipt import (
+    InstalledAsset,
+    InstallReceipt,
+    dumps,
+    load,
+    receipt_name,
+    receipt_path,
+    sha256,
+    verify,
+)
 
 ORG = "the-orrery"
 TOOL_ASSETS: dict[str, tuple[str, ...]] = {
@@ -38,6 +47,12 @@ class Release:
     download_base: str
 
 
+@dataclass(frozen=True)
+class ToolRequest:
+    tool: str
+    tag: str | None = None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="orrery-upgrade",
@@ -55,7 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="download, verify, and atomically install; otherwise print the plan",
     )
     parser.add_argument(
-        "--list", action="store_true", help="list managed repositories and assets"
+        "--verify",
+        action="store_true",
+        help="verify installed binaries against local release receipts",
     )
     parser.add_argument(
         "--dry-run", "--plan", action="store_true", help="print the install plan"
@@ -75,33 +92,37 @@ def build_parser() -> argparse.ArgumentParser:
 def run(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    tools = _select_tools(args.tools, parser)
+    tools = _select_tools(args.tools, parser, allow_tags=True)
     bin_dir = _bin_dir(args.bin_dir)
 
-    if args.list:
-        for tool, assets in TOOL_ASSETS.items():
-            print(f"{tool}: {', '.join(assets)}")
+    if args.apply and args.verify:
+        parser.error("--apply and --verify are mutually exclusive")
+
+    if args.verify:
+        _verify_tools(tools, bin_dir)
         return
 
     if args.dry_run or not args.apply:
         _print_plan(tools, bin_dir)
         if not args.apply:
-            suffix = f" {' '.join(tools)}" if args.tools else ""
+            suffix = f" {' '.join(args.tools)}" if args.tools else ""
             print(f"\nRun `orrery-upgrade --apply{suffix}` to install.")
         return
 
     failed: list[str] = []
-    for tool in tools:
+    for request in tools:
+        tool = request.tool
         print(f"  {tool}: ", end="", flush=True)
         try:
-            tag = _install_tool(tool, bin_dir=bin_dir, timeout=args.timeout)
+            receipt = _install_tool(
+                tool, tag=request.tag, bin_dir=bin_dir, timeout=args.timeout
+            )
         except Exception as exc:
             print("✗")
             print(f"    {exc}", file=sys.stderr)
             failed.append(tool)
             continue
-        mark_installed(tool, tag)
-        print(f"✓ {tag}")
+        print(f"✓ {receipt.tag}")
 
     if failed:
         print(f"\n  {len(failed)} failed: {', '.join(failed)}", file=sys.stderr)
@@ -109,13 +130,21 @@ def run(argv: list[str] | None = None) -> None:
     print(f"\n  {len(tools)} repositories up to date in {bin_dir}")
 
 
-def _select_tools(requested: list[str], parser: argparse.ArgumentParser) -> list[str]:
+def _select_tools(
+    requested: list[str], parser: argparse.ArgumentParser, *, allow_tags: bool
+) -> list[ToolRequest]:
     if not requested:
-        return list(TOOLS)
-    unknown = sorted(set(requested) - set(TOOLS))
+        return [ToolRequest(tool) for tool in TOOLS]
+    result: list[ToolRequest] = []
+    for value in requested:
+        tool, separator, tag = value.partition("@")
+        if separator and (not allow_tags or not tag or not tag.startswith("v")):
+            parser.error(f"invalid tool selection: {value}")
+        result.append(ToolRequest(tool, tag or None))
+    unknown = sorted({item.tool for item in result} - set(TOOLS))
     if unknown:
         parser.error(f"unknown tool(s): {', '.join(unknown)}")
-    return requested
+    return result
 
 
 def _bin_dir(value: Path | None) -> Path:
@@ -140,14 +169,57 @@ def _repo(tool: str) -> str:
     return f"{ORG}/{tool}"
 
 
-def _print_plan(tools: list[str], bin_dir: Path) -> None:
+def _print_plan(tools: list[ToolRequest], bin_dir: Path) -> None:
     platform_name, arch = _platform()
-    for tool in tools:
+    for request in tools:
+        tool = request.tool
+        desired = request.tag or "latest"
         assets = ", ".join(
             f"{name}-{platform_name}-{arch} -> {bin_dir / name}"
             for name in TOOL_ASSETS[tool]
         )
-        print(f"{tool}: latest verified GitHub Release ({assets})")
+        print(f"{tool}: {desired} verified GitHub Release ({assets})")
+
+
+def _verify_tools(tools: list[ToolRequest], bin_dir: Path) -> None:
+    failed: list[str] = []
+    for request in tools:
+        tool = request.tool
+        path = receipt_path(tool, bin_dir)
+        try:
+            receipt = load(path)
+            errors = _verify_receipt(receipt, tool=tool, bin_dir=bin_dir)
+            if request.tag and receipt.tag != request.tag:
+                errors.append(f"tag is {receipt.tag}, expected {request.tag}")
+        except RuntimeError as exc:
+            errors = [str(exc)]
+            receipt = None
+        if errors:
+            failed.append(tool)
+            print(f"{tool}: ✗", file=sys.stderr)
+            for error in errors:
+                print(f"  {error}", file=sys.stderr)
+        else:
+            assert receipt is not None
+            print(f"{tool}: ✓ {receipt.tag}")
+    if failed:
+        print(f"\n{len(failed)} failed: {', '.join(failed)}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def _verify_receipt(receipt: InstallReceipt, *, tool: str, bin_dir: Path) -> list[str]:
+    errors = verify(receipt, tool=tool, bin_dir=bin_dir)
+    expected_assets = set(TOOL_ASSETS[tool])
+    actual_assets = {asset.name for asset in receipt.assets}
+    if actual_assets != expected_assets:
+        errors.append(
+            f"asset set is {sorted(actual_assets)}, expected {sorted(expected_assets)}"
+        )
+    platform_name, arch = _platform()
+    expected_platform = f"{platform_name}-{arch}"
+    if receipt.platform != expected_platform:
+        errors.append(f"platform is {receipt.platform}, expected {expected_platform}")
+    return errors
 
 
 def _request(url: str) -> urllib.request.Request:
@@ -174,6 +246,12 @@ def _fetch_latest_release(repo: str, *, timeout: float) -> Release:
     return Release(tag, f"https://github.com/{repo}/releases/download/{tag}")
 
 
+def _fetch_release(repo: str, *, tag: str | None, timeout: float) -> Release:
+    if tag:
+        return Release(tag, f"https://github.com/{repo}/releases/download/{tag}")
+    return _fetch_latest_release(repo, timeout=timeout)
+
+
 def _download(url: str, destination: Path, *, timeout: float) -> None:
     with (
         urllib.request.urlopen(
@@ -197,17 +275,11 @@ def _parse_checksums(text: str) -> dict[str, str]:
     return result
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _install_tool(tool: str, *, bin_dir: Path, timeout: float) -> str:
+def _install_tool(
+    tool: str, *, tag: str | None = None, bin_dir: Path, timeout: float
+) -> InstallReceipt:
     platform_name, arch = _platform()
-    release = _fetch_latest_release(_repo(tool), timeout=timeout)
+    release = _fetch_release(_repo(tool), tag=tag, timeout=timeout)
     asset_names = {
         binary: f"{binary}-{platform_name}-{arch}" for binary in TOOL_ASSETS[tool]
     }
@@ -225,16 +297,33 @@ def _install_tool(tool: str, *, bin_dir: Path, timeout: float) -> str:
                 raise RuntimeError(message)
             path = stage / asset
             _download(f"{release.download_base}/{asset}", path, timeout=timeout)
-            actual = _sha256(path)
+            actual = sha256(path)
             if actual != expected:
                 message = f"{tool} {release.tag}: checksum mismatch for {asset}"
                 raise RuntimeError(message)
             path.chmod(0o755)
             staged[binary] = path
+        receipt = InstallReceipt(
+            repo=_repo(tool),
+            tag=release.tag,
+            platform=f"{platform_name}-{arch}",
+            assets=tuple(
+                InstalledAsset(
+                    name=binary,
+                    release_asset=asset_names[binary],
+                    target=bin_dir / binary,
+                    sha256=checksums[asset_names[binary]],
+                )
+                for binary in TOOL_ASSETS[tool]
+            ),
+        )
+        receipt_file = stage / receipt_name(tool)
+        receipt_file.write_text(dumps(receipt), encoding="utf-8")
+        staged[receipt_name(tool)] = receipt_file
         _atomic_replace(staged, bin_dir=bin_dir, stage=stage)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
-    return release.tag
+    return receipt
 
 
 def _atomic_replace(staged: dict[str, Path], *, bin_dir: Path, stage: Path) -> None:
@@ -243,7 +332,7 @@ def _atomic_replace(staged: dict[str, Path], *, bin_dir: Path, stage: Path) -> N
     try:
         for binary in staged:
             target = bin_dir / binary
-            if target.exists():
+            if target.exists() or target.is_symlink():
                 backup = stage / f"{binary}.previous"
                 target.replace(backup)
                 backups[binary] = backup
