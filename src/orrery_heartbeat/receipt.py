@@ -156,18 +156,7 @@ def _verify_asset(
     if asset.bundle != expected_bundle:
         return [f"{asset.name}: bundle is {asset.bundle}, expected {expected_bundle}"]
 
-    expected_link = Path(payload_name(tool)) / asset.name / asset.name
-    if asset.target.is_symlink():
-        if (actual_link := asset.target.readlink()) != expected_link:
-            errors.append(
-                f"{asset.name}: launcher points to {actual_link}, expected {expected_link}"
-            )
-    elif not asset.target.is_file():
-        errors.append(f"{asset.name}: launcher missing: {asset.target}")
-    elif asset.target.read_text(encoding="utf-8") != launcher_script(tool, asset.name):
-        errors.append(f"{asset.name}: launcher wrapper content mismatch")
-    elif not asset.target.stat().st_mode & 0o111:
-        errors.append(f"{asset.name}: launcher wrapper is not executable")
+    errors.extend(_verify_launcher(asset, tool=tool))
 
     launcher = asset.bundle / asset.name
     if not launcher.is_file():
@@ -178,6 +167,23 @@ def _verify_asset(
         errors.append(f"{asset.name}: invalid release SHA256 in receipt")
     errors.extend(_verify_bundle(asset))
     return errors
+
+
+def _verify_launcher(asset: InstalledAsset, *, tool: str) -> list[str]:
+    expected_link = Path(payload_name(tool)) / asset.name / asset.name
+    if asset.target.is_symlink():
+        if (actual_link := asset.target.readlink()) != expected_link:
+            return [
+                f"{asset.name}: launcher points to {actual_link}, expected {expected_link}"
+            ]
+        return []
+    if not asset.target.is_file():
+        return [f"{asset.name}: launcher missing: {asset.target}"]
+    if asset.target.read_text(encoding="utf-8") != launcher_script(tool, asset.name):
+        return [f"{asset.name}: launcher wrapper content mismatch"]
+    if not asset.target.stat().st_mode & 0o111:
+        return [f"{asset.name}: launcher wrapper is not executable"]
+    return []
 
 
 def _verify_bundle(asset: InstalledAsset) -> list[str]:
