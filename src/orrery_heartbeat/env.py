@@ -27,7 +27,8 @@ _ENV_PREFIX_MAP = {
     },
     "crux": {
         "tools_root": "CRUX_TOOLS_ROOT",
-        "memex_project": "CRUX_MEMEX_PROJECT",
+        "memex_bin": "CRUX_MEMEX_BIN",
+        "docket_bin": "CRUX_DOCKET_BIN",
     },
     "rhizome": {
         "asset_prefixes": "RHIZOME_ASSET_PREFIXES",

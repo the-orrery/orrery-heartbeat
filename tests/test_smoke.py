@@ -23,6 +23,17 @@ def test_load_env_missing_file(tmp_path):
     assert env.load_env(tmp_path / "nonexistent.toml") == {}
 
 
+def test_load_env_exports_crux_binary_overrides(tmp_path):
+    path = tmp_path / "env.toml"
+    path.write_text(
+        '[crux]\nmemex_bin = "/opt/bin/memex"\ndocket_bin = "/opt/bin/docket"\n'
+    )
+    assert env.load_env(path) == {
+        "CRUX_MEMEX_BIN": "/opt/bin/memex",
+        "CRUX_DOCKET_BIN": "/opt/bin/docket",
+    }
+
+
 def test_upgrade_help_has_no_network_side_effect(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: calls.append(a))
