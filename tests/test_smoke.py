@@ -112,7 +112,7 @@ def test_authenticated_extension_rejects_unsupported_platform_before_network(
     calls = []
     monkeypatch.setattr(cli, "_platform", lambda: ("linux", "x86_64"))
     monkeypatch.setattr(
-        cli, "_fetch_release", lambda *args, **kwargs: calls.append(args)
+        cli, "_fetch_release", lambda *args, **_kwargs: calls.append(args)
     )
 
     with pytest.raises(SystemExit) as exc_info:

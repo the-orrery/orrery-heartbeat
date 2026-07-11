@@ -17,7 +17,6 @@ from pathlib import Path, PurePosixPath
 
 from . import _ssl_context
 from .launchers import launcher_script
-from .registry import DEFAULT_TOOLS, TOOLS, TOOL_SPECS
 from .receipt import (
     InstalledAsset,
     InstallReceipt,
@@ -30,6 +29,7 @@ from .receipt import (
     tree_sha256,
     verify,
 )
+from .registry import DEFAULT_TOOLS, TOOL_SPECS, TOOLS
 
 CHECKSUM_FIELD_COUNT = 2
 SHA256_HEX_LENGTH = 64
@@ -288,7 +288,7 @@ def _fetch_authenticated_release(
         raise RuntimeError(f"{repo}: release has no tag_name")
     raw_assets = payload.get("assets")
     if not isinstance(raw_assets, list):
-        raise RuntimeError(f"{repo} {release_tag}: release has no asset list")
+        raise TypeError(f"{repo} {release_tag}: release has no asset list")
     assets: dict[str, str] = {}
     for raw_asset in raw_assets:
         if not isinstance(raw_asset, dict):
@@ -307,7 +307,7 @@ def _gh_api_json(endpoint: str, *, timeout: float) -> dict[str, object]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"GitHub API returned invalid JSON for {endpoint}") from exc
     if not isinstance(payload, dict):
-        raise RuntimeError(f"GitHub API returned invalid payload for {endpoint}")
+        raise TypeError(f"GitHub API returned invalid payload for {endpoint}")
     return payload
 
 
