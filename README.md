@@ -66,7 +66,7 @@ unsupported platform fails before any network request.
 
 Pin an exact release for a reproducible install or rollback:
 
-```
+```bash
 orrery-upgrade --apply crux@v0.1.1
 ```
 

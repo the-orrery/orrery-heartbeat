@@ -316,8 +316,8 @@ def _run_gh(
 ) -> subprocess.CompletedProcess:
     if not shutil.which("gh"):
         raise RuntimeError(
-            "authenticated release requires GitHub CLI; install `gh` and run "
-            "`gh auth login`, or provide GH_TOKEN/GITHUB_TOKEN"
+            "authenticated release requires GitHub CLI; install `gh`, then run "
+            "`gh auth login` or provide GH_TOKEN/GITHUB_TOKEN"
         )
     try:
         return subprocess.run(
