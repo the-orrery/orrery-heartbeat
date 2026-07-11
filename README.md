@@ -4,9 +4,9 @@ Verified release installer for [the-orrery](https://github.com/the-orrery) CLI t
 
 ## orrery-upgrade
 
-Plans or installs/upgrades the nine executable Orrery repositories from verified
-GitHub Release assets. `gnomon` is a library and is intentionally excluded. The
-bare command is read-only and prints the install plan:
+Plans or installs/upgrades the public Orrery CLI fleet from verified GitHub
+Release assets. `gnomon` is a library and is intentionally excluded. The bare
+command is read-only and prints the public-fleet install plan:
 
 ```
 orrery-upgrade
@@ -50,14 +50,29 @@ Upgrade selected tools by naming them:
 orrery-upgrade --apply crux rhizome
 ```
 
+Personal authenticated extensions are explicit-only and never enter the public
+fleet default. They use the repository and platform policy declared by the
+updater. GitHub CLI resolves authentication from `gh auth login` or the standard
+`GH_TOKEN` / `GITHUB_TOKEN` environment variables; the updater neither reads nor
+prints the credential:
+
+```bash
+orrery-upgrade --apply hostdiag
+orrery-upgrade --verify hostdiag
+```
+
+`hostdiag` currently advertises only `darwin-arm64`. An explicit request on an
+unsupported platform fails before any network request.
+
 Pin an exact release for a reproducible install or rollback:
 
 ```
 orrery-upgrade --apply crux@v0.1.1
 ```
 
-The installer selects macOS arm64 or Linux x86_64 onedir archives, verifies each
-archive against `SHA256SUMS`, and extracts it once into a persistent bundle.
+The installer selects release archives using each tool's explicit platform
+contract, verifies each archive against `SHA256SUMS`, and extracts it once into
+a persistent bundle.
 It downloads every archive for a repository before replacing anything, then
 commits the bundles, launcher symlinks, and repository receipt as one atomic
 group. `--verify` is offline: it checks the asset set, platform, launcher,

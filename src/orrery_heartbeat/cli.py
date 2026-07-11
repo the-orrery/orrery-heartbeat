@@ -6,15 +6,18 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from . import _ssl_context
 from .launchers import launcher_script
+from .registry import DEFAULT_TOOLS, TOOLS, TOOL_SPECS
 from .receipt import (
     InstalledAsset,
     InstallReceipt,
@@ -28,19 +31,6 @@ from .receipt import (
     verify,
 )
 
-ORG = "the-orrery"
-TOOL_ASSETS: dict[str, tuple[str, ...]] = {
-    "almagest": ("almagest",),
-    "crux": ("crux",),
-    "docket": ("docket", "pm"),
-    "memex": ("memex", "memex-sync"),
-    "orrery-heartbeat": ("orrery-upgrade", "orrery-env"),
-    "pharos": ("pharos",),
-    "registrar": ("registrar",),
-    "rhizome": ("rhizome",),
-    "seed": ("seed",),
-}
-TOOLS = tuple(TOOL_ASSETS)
 CHECKSUM_FIELD_COUNT = 2
 SHA256_HEX_LENGTH = 64
 
@@ -49,6 +39,7 @@ SHA256_HEX_LENGTH = 64
 class Release:
     tag: str
     download_base: str
+    assets: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +88,7 @@ def run(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     tools = _select_tools(args.tools, parser, allow_tags=True)
+    tools = _validate_platforms(tools, parser, explicit=bool(args.tools))
     bin_dir = _bin_dir(args.bin_dir)
 
     if args.apply and args.verify:
@@ -138,7 +130,7 @@ def _select_tools(
     requested: list[str], parser: argparse.ArgumentParser, *, allow_tags: bool
 ) -> list[ToolRequest]:
     if not requested:
-        return [ToolRequest(tool) for tool in TOOLS]
+        return [ToolRequest(tool) for tool in DEFAULT_TOOLS]
     result: list[ToolRequest] = []
     for value in requested:
         tool, separator, tag = value.partition("@")
@@ -170,7 +162,31 @@ def _platform() -> tuple[str, str]:
 
 
 def _repo(tool: str) -> str:
-    return f"{ORG}/{tool}"
+    return TOOL_SPECS[tool].repo
+
+
+def _platform_id() -> str:
+    platform_name, arch = _platform()
+    return f"{platform_name}-{arch}"
+
+
+def _validate_platforms(
+    requests: list[ToolRequest], parser: argparse.ArgumentParser, *, explicit: bool
+) -> list[ToolRequest]:
+    platform_id = _platform_id()
+    supported = [
+        request
+        for request in requests
+        if platform_id in TOOL_SPECS[request.tool].platforms
+    ]
+    unavailable = [
+        request.tool
+        for request in requests
+        if platform_id not in TOOL_SPECS[request.tool].platforms
+    ]
+    if unavailable and explicit:
+        parser.error(f"unsupported on {platform_id}: {', '.join(sorted(unavailable))}")
+    return supported
 
 
 def _print_plan(tools: list[ToolRequest], bin_dir: Path) -> None:
@@ -180,7 +196,7 @@ def _print_plan(tools: list[ToolRequest], bin_dir: Path) -> None:
         desired = request.tag or "latest"
         assets = ", ".join(
             f"{name}-{platform_name}-{arch}.tar.gz -> {bin_dir / name}"
-            for name in TOOL_ASSETS[tool]
+            for name in TOOL_SPECS[tool].assets
         )
         print(f"{tool}: {desired} verified GitHub Release ({assets})")
 
@@ -212,8 +228,9 @@ def _verify_tools(tools: list[ToolRequest], bin_dir: Path) -> None:
 
 
 def _verify_receipt(receipt: InstallReceipt, *, tool: str, bin_dir: Path) -> list[str]:
-    errors = verify(receipt, tool=tool, bin_dir=bin_dir)
-    expected_assets = set(TOOL_ASSETS[tool])
+    spec = TOOL_SPECS[tool]
+    errors = verify(receipt, tool=tool, expected_repo=spec.repo, bin_dir=bin_dir)
+    expected_assets = set(spec.assets)
     actual_assets = {asset.name for asset in receipt.assets}
     if actual_assets != expected_assets:
         errors.append(
@@ -227,14 +244,13 @@ def _verify_receipt(receipt: InstallReceipt, *, tool: str, bin_dir: Path) -> lis
 
 
 def _request(url: str) -> urllib.request.Request:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "orrery-heartbeat",
-    }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return urllib.request.Request(url, headers=headers)
+    return urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "orrery-heartbeat",
+        },
+    )
 
 
 def _fetch_latest_release(repo: str, *, timeout: float) -> Release:
@@ -250,10 +266,74 @@ def _fetch_latest_release(repo: str, *, timeout: float) -> Release:
     return Release(tag, f"https://github.com/{repo}/releases/download/{tag}")
 
 
-def _fetch_release(repo: str, *, tag: str | None, timeout: float) -> Release:
+def _fetch_release(tool: str, *, tag: str | None, timeout: float) -> Release:
+    spec = TOOL_SPECS[tool]
+    if spec.access == "gh":
+        return _fetch_authenticated_release(spec.repo, tag=tag, timeout=timeout)
+    repo = spec.repo
     if tag:
         return Release(tag, f"https://github.com/{repo}/releases/download/{tag}")
     return _fetch_latest_release(repo, timeout=timeout)
+
+
+def _fetch_authenticated_release(
+    repo: str, *, tag: str | None, timeout: float
+) -> Release:
+    endpoint = (
+        f"repos/{repo}/releases/tags/{tag}" if tag else f"repos/{repo}/releases/latest"
+    )
+    payload = _gh_api_json(endpoint, timeout=timeout)
+    release_tag = payload.get("tag_name")
+    if not isinstance(release_tag, str) or not release_tag:
+        raise RuntimeError(f"{repo}: release has no tag_name")
+    raw_assets = payload.get("assets")
+    if not isinstance(raw_assets, list):
+        raise RuntimeError(f"{repo} {release_tag}: release has no asset list")
+    assets: dict[str, str] = {}
+    for raw_asset in raw_assets:
+        if not isinstance(raw_asset, dict):
+            continue
+        name = raw_asset.get("name")
+        url = raw_asset.get("url")
+        if isinstance(name, str) and name and isinstance(url, str) and url:
+            assets[name] = url
+    return Release(release_tag, "", assets)
+
+
+def _gh_api_json(endpoint: str, *, timeout: float) -> dict[str, object]:
+    result = _run_gh(["api", "--hostname", "github.com", endpoint], timeout=timeout)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"GitHub API returned invalid JSON for {endpoint}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"GitHub API returned invalid payload for {endpoint}")
+    return payload
+
+
+def _run_gh(
+    args: list[str], *, timeout: float, stdout: int | object = subprocess.PIPE
+) -> subprocess.CompletedProcess:
+    if not shutil.which("gh"):
+        raise RuntimeError(
+            "authenticated release requires GitHub CLI; install `gh` and run "
+            "`gh auth login`, or provide GH_TOKEN/GITHUB_TOKEN"
+        )
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            check=True,
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            text=stdout == subprocess.PIPE,
+            timeout=timeout,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if isinstance(exc.stderr, str) else ""
+        detail = stderr or f"exit {exc.returncode}"
+        raise RuntimeError(f"GitHub CLI request failed: {detail}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"GitHub CLI request timed out after {timeout:g}s") from exc
 
 
 def _download(url: str, destination: Path, *, timeout: float) -> None:
@@ -264,6 +344,41 @@ def _download(url: str, destination: Path, *, timeout: float) -> None:
         destination.open("wb") as output,
     ):
         shutil.copyfileobj(response, output)
+
+
+def _download_release_asset(
+    release: Release,
+    name: str,
+    destination: Path,
+    *,
+    access: str,
+    timeout: float,
+) -> None:
+    if access == "public":
+        _download(f"{release.download_base}/{name}", destination, timeout=timeout)
+        return
+    if access != "gh" or release.assets is None:
+        raise RuntimeError(f"unsupported release access policy: {access}")
+    url = release.assets.get(name)
+    if not url:
+        raise RuntimeError(f"{release.tag}: release asset missing: {name}")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "api.github.com":
+        raise RuntimeError(f"{release.tag}: unsafe release asset URL for {name}")
+    endpoint = parsed.path.lstrip("/")
+    with destination.open("wb") as output:
+        _run_gh(
+            [
+                "api",
+                "--hostname",
+                "github.com",
+                "-H",
+                "Accept: application/octet-stream",
+                endpoint,
+            ],
+            timeout=timeout,
+            stdout=output,
+        )
 
 
 def _parse_checksums(text: str) -> dict[str, str]:
@@ -282,17 +397,23 @@ def _parse_checksums(text: str) -> dict[str, str]:
 def _install_tool(
     tool: str, *, tag: str | None = None, bin_dir: Path, timeout: float
 ) -> InstallReceipt:
+    spec = TOOL_SPECS[tool]
     platform_name, arch = _platform()
-    release = _fetch_release(_repo(tool), tag=tag, timeout=timeout)
+    release = _fetch_release(tool, tag=tag, timeout=timeout)
     asset_names = {
-        binary: f"{binary}-{platform_name}-{arch}.tar.gz"
-        for binary in TOOL_ASSETS[tool]
+        binary: f"{binary}-{platform_name}-{arch}.tar.gz" for binary in spec.assets
     }
     bin_dir.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".orrery-{tool}-", dir=bin_dir))
     try:
         checksum_file = stage / "SHA256SUMS"
-        _download(f"{release.download_base}/SHA256SUMS", checksum_file, timeout=timeout)
+        _download_release_asset(
+            release,
+            "SHA256SUMS",
+            checksum_file,
+            access=spec.access,
+            timeout=timeout,
+        )
         checksums = _parse_checksums(checksum_file.read_text(encoding="utf-8"))
         payload = stage / payload_name(tool)
         payload.mkdir()
@@ -303,7 +424,9 @@ def _install_tool(
                 message = f"{tool} {release.tag}: checksum missing for {asset}"
                 raise RuntimeError(message)
             path = stage / asset
-            _download(f"{release.download_base}/{asset}", path, timeout=timeout)
+            _download_release_asset(
+                release, asset, path, access=spec.access, timeout=timeout
+            )
             actual = sha256(path)
             if actual != expected:
                 message = f"{tool} {release.tag}: checksum mismatch for {asset}"
@@ -311,7 +434,7 @@ def _install_tool(
             _extract_bundle(path, payload=payload, binary=binary)
             release_hashes[binary] = expected
         staged: dict[str, Path] = {payload_name(tool): payload}
-        for binary in TOOL_ASSETS[tool]:
+        for binary in spec.assets:
             launcher = payload / binary / binary
             if not launcher.is_file() or not launcher.stat().st_mode & 0o111:
                 message = f"{tool} {release.tag}: bundle launcher invalid: {launcher}"
@@ -333,7 +456,7 @@ def _install_tool(
                     release_sha256=release_hashes[binary],
                     tree_sha256=tree_sha256(payload / binary),
                 )
-                for binary in TOOL_ASSETS[tool]
+                for binary in spec.assets
             ),
         )
         receipt_file = stage / receipt_name(tool)

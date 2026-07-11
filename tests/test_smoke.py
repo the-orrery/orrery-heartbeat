@@ -101,8 +101,148 @@ def test_upgrade_bare_command_prints_release_plan_without_network(
     assert calls == []
     out = capsys.readouterr().out
     assert "crux: latest verified GitHub Release" in out
+    assert "hostdiag:" not in out
     assert "uv tool install" not in out
     assert "Run `orrery-upgrade --apply` to install." in out
+
+
+def test_authenticated_extension_rejects_unsupported_platform_before_network(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(cli, "_platform", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(
+        cli, "_fetch_release", lambda *args, **kwargs: calls.append(args)
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.run(["--apply", "hostdiag"])
+
+    assert exc_info.value.code == 2
+    assert calls == []
+
+
+def test_hostdiag_uses_authenticated_repo_for_install_and_verify(
+    monkeypatch, tmp_path, capsys
+):
+    bundle = _bundle("hostdiag", b"hostdiag")
+    checksum = hashlib.sha256(bundle).hexdigest()
+    release = cli.Release(
+        "v0.1.0",
+        "",
+        {
+            "SHA256SUMS": "https://api.github.com/repos/Eridanus117/hostdiag/releases/assets/1",
+            "hostdiag-darwin-arm64.tar.gz": "https://api.github.com/repos/Eridanus117/hostdiag/releases/assets/2",
+        },
+    )
+
+    def fake_download(_release, name, destination, **_kwargs):
+        if name == "SHA256SUMS":
+            destination.write_text(
+                f"{checksum}  hostdiag-darwin-arm64.tar.gz\n", encoding="utf-8"
+            )
+        else:
+            destination.write_bytes(bundle)
+
+    monkeypatch.setattr(cli, "_platform", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(cli, "_fetch_release", lambda *_args, **_kwargs: release)
+    monkeypatch.setattr(cli, "_download_release_asset", fake_download)
+
+    cli.run(["--apply", "--bin-dir", str(tmp_path), "hostdiag"])
+    cli.run(["--verify", "--bin-dir", str(tmp_path), "hostdiag"])
+
+    receipt = load(receipt_path("hostdiag", tmp_path))
+    assert receipt.repo == "Eridanus117/hostdiag"
+    assert "hostdiag: ✓ v0.1.0" in capsys.readouterr().out
+
+
+def test_authenticated_release_metadata_comes_from_gh(monkeypatch):
+    calls = []
+    payload = {
+        "tag_name": "v0.1.0",
+        "assets": [
+            {
+                "name": "SHA256SUMS",
+                "url": "https://api.github.com/repos/Eridanus117/hostdiag/releases/assets/1",
+            }
+        ],
+    }
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        return type("Result", (), {"stdout": json.dumps(payload)})()
+
+    monkeypatch.setattr(cli, "_run_gh", fake_run)
+    release = cli._fetch_release("hostdiag", tag="v0.1.0", timeout=1)
+
+    assert release.tag == "v0.1.0"
+    assert release.assets == {"SHA256SUMS": payload["assets"][0]["url"]}
+    assert calls == [
+        [
+            "api",
+            "--hostname",
+            "github.com",
+            "repos/Eridanus117/hostdiag/releases/tags/v0.1.0",
+        ]
+    ]
+
+
+def test_authenticated_release_requires_github_cli(monkeypatch):
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="gh auth login"):
+        cli._run_gh(["api", "repos/Eridanus117/hostdiag/releases/latest"], timeout=1)
+
+
+def test_authenticated_asset_download_uses_github_api(monkeypatch, tmp_path):
+    calls = []
+    release = cli.Release(
+        "v0.1.0",
+        "",
+        {
+            "SHA256SUMS": "https://api.github.com/repos/Eridanus117/hostdiag/releases/assets/1"
+        },
+    )
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return type("Result", (), {"stdout": None})()
+
+    monkeypatch.setattr(cli, "_run_gh", fake_run)
+    destination = tmp_path / "SHA256SUMS"
+    cli._download_release_asset(
+        release,
+        "SHA256SUMS",
+        destination,
+        access="gh",
+        timeout=3,
+    )
+
+    assert calls[0][0] == [
+        "api",
+        "--hostname",
+        "github.com",
+        "-H",
+        "Accept: application/octet-stream",
+        "repos/Eridanus117/hostdiag/releases/assets/1",
+    ]
+    assert calls[0][1]["timeout"] == 3
+    assert calls[0][1]["stdout"].name == str(destination)
+
+
+def test_authenticated_asset_rejects_cross_origin_url(tmp_path):
+    release = cli.Release(
+        "v0.1.0", "", {"SHA256SUMS": "https://example.com/token-target"}
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe release asset URL"):
+        cli._download_release_asset(
+            release,
+            "SHA256SUMS",
+            tmp_path / "SHA256SUMS",
+            access="gh",
+            timeout=1,
+        )
 
 
 def test_upgrade_selected_tool_installs_verified_asset(monkeypatch, tmp_path, capsys):

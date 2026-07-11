@@ -125,9 +125,10 @@ def load(path: Path) -> InstallReceipt:
     return InstallReceipt(repo, tag, platform_name, assets)
 
 
-def verify(receipt: InstallReceipt, *, tool: str, bin_dir: Path) -> list[str]:
+def verify(
+    receipt: InstallReceipt, *, tool: str, expected_repo: str, bin_dir: Path
+) -> list[str]:
     errors: list[str] = []
-    expected_repo = f"the-orrery/{tool}"
     if receipt.repo != expected_repo:
         errors.append(f"repo is {receipt.repo}, expected {expected_repo}")
 
