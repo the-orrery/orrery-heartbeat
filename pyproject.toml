@@ -24,7 +24,7 @@ orrery-env = "orrery_heartbeat.env:run"
 dev = [
     "poethepoet",
     "pytest>=8.0",
-    "ruff>=0.15",
+    "ruff>=0.15.21",
 ]
 freeze = ["pyinstaller>=6,<7"]
 
