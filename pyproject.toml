@@ -14,7 +14,7 @@ authors = [{ name = "Eridanus" }]
 classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["certifi>=2025.1.31"]
+dependencies = ["certifi>=2026.7.22"]
 
 [project.scripts]
 orrery-upgrade = "orrery_heartbeat.cli:run"
